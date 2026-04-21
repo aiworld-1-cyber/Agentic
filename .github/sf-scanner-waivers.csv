@@ -1,0 +1,2 @@
+rule,file_pattern,message_contains,severity_threshold,expiry,reason,approved_by,approved_date,ticket,status
+ApexDoc,MyExampleClass.cls,,3,10-05-2027,Placeholder waiver - Waiver created for demonstration purposes. Replace with actual violations.,jane-techlead,10-04-2027,PROJ-001,ACTIVE

@@ -1,0 +1,10 @@
+[
+  {
+    "package": "example-package",
+    "severity": "high",
+    "advisory": "GHSA-xxxx-xxxx-xxxx",
+    "reason": "Placeholder waiver - Replace with actual npm vulnerabilities. No fix available currently.",
+    "expires": "2027-04-10",
+    "approved_by": "platform-security"
+  }
+]
