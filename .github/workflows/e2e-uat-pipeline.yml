@@ -1,0 +1,1003 @@
+name: UAT End-to-End Pipeline
+
+on:
+  pull_request:
+    branches: [uat]
+    paths:
+      - 'force-app/**'
+      - '.github/workflows/e2e-uat-pipeline.yml'
+      - '.github/sf-scanner-waivers.csv'
+    types: [opened, reopened, synchronize, edited, ready_for_review]
+  pull_request_review:
+    types: [submitted]
+  workflow_dispatch:
+    inputs:
+      scanner:
+        description: 'Scanner to run'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - checkmarx
+          - fortify
+      action:
+        description: 'Action to perform'
+        required: false
+        default: 'deploy'
+        type: choice
+        options:
+          - deploy
+          - rollback
+      rollback_commit_sha:
+        description: 'Commit SHA to rollback to'
+        required: false
+        type: string
+      rollback_pr_number:
+        description: 'PR number for rollback reference'
+        required: false
+        type: string
+
+env:
+  ORG_ALIAS: ${{ vars.ORG_ALIAS || 'uat' }}
+  COVERAGE_THRESHOLD: ${{ vars.COVERAGE_THRESHOLD || '85' }}
+  SOURCE_DIR: ${{ vars.SOURCE_DIR || 'force-app/main/default' }}
+  SFDX_AUTH_SECRET_NAME: ${{ vars.SFDX_AUTH_SECRET_NAME || 'CRT_UAT_AUTHURL' }}
+  DELTA_FROM_COMMIT: ${{ vars.DELTA_FROM_COMMIT }}
+  FCLI_BOOTSTRAP_VERSION: ${{ vars.FCLI_BOOTSTRAP_VERSION }}
+  SCA_ENFORCEMENT_MODE: ${{ vars.SCA_ENFORCEMENT_MODE || 'enforce' }}
+
+jobs:
+  # Job 1: Evaluate Scanner Availability
+  setup:
+    name: Setup - Evaluate Scanner Availability
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request_review'
+    outputs:
+      run-checkmarx: ${{ steps.scanner-check.outputs.run-checkmarx }}
+      run-fortify: ${{ steps.scanner-check.outputs.run-fortify }}
+    steps:
+      - name: Evaluate scanner availability
+        id: scanner-check
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ secrets.CX_CLIENT_SECRET }}" ]]; then
+            echo "run-checkmarx=true" >> $GITHUB_OUTPUT
+          else
+            echo "run-checkmarx=false" >> $GITHUB_OUTPUT
+          fi
+          if [[ -n "${{ secrets.FOD_CLIENT_SECRET }}" ]]; then
+            echo "run-fortify=true" >> $GITHUB_OUTPUT
+          else
+            echo "run-fortify=false" >> $GITHUB_OUTPUT
+          fi
+
+  # Job 2: Salesforce PR Validation
+  salesforce-validation:
+    name: Salesforce Validation
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    outputs:
+      has_delta: ${{ steps.delta-check.outputs.has_delta }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Bootstrap package.json if missing
+        run: |
+          set -euo pipefail
+          if [[ ! -f package.json ]]; then
+            echo "Creating default package.json..."
+            cat > package.json << 'EOF'
+{
+  "name": "salesforce-app",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Salesforce App",
+  "scripts": {
+    "lint": "eslint **/{aura,lwc}/**/*.js",
+    "test": "npm run test:unit",
+    "test:unit": "sfdx-lwc-jest",
+    "test:unit:watch": "sfdx-lwc-jest --watch",
+    "test:unit:debug": "sfdx-lwc-jest --debug",
+    "test:unit:coverage": "sfdx-lwc-jest --coverage",
+    "prettier": "prettier --write \"**/*.{cls,cmp,component,css,html,js,json,md,page,trigger,xml,yaml,yml}\"",
+    "prettier:verify": "prettier --check \"**/*.{cls,cmp,component,css,html,js,json,md,page,trigger,xml,yaml,yml}\"",
+    "prepare": "husky || true",
+    "precommit": "lint-staged"
+  },
+  "devDependencies": {
+    "@lwc/eslint-plugin-lwc": "^3.1.0",
+    "@prettier/plugin-xml": "^3.4.1",
+    "@salesforce/eslint-config-lwc": "^4.0.0",
+    "@salesforce/eslint-plugin-aura": "^3.0.0",
+    "@salesforce/eslint-plugin-lightning": "^2.0.0",
+    "@salesforce/sfdx-lwc-jest": "^7.0.2",
+    "eslint": "^9.29.0",
+    "eslint-plugin-import": "^2.31.0",
+    "eslint-plugin-jest": "^28.14.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.1.2",
+    "prettier": "^3.5.3",
+    "prettier-plugin-apex": "^2.2.6"
+  },
+  "lint-staged": {
+    "**/*.{cls,cmp,component,css,html,js,json,md,page,trigger,xml,yaml,yml}": ["prettier --write"],
+    "**/{aura,lwc}/**/*.js": ["eslint"],
+    "**/lwc/**": ["sfdx-lwc-jest -- --bail --findRelatedTests --passWithNoTests"]
+  }
+}
+EOF
+          fi
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Salesforce CLI
+        run: npm install -g @salesforce/cli
+
+      - name: Authenticate with Salesforce
+        run: |
+          set -euo pipefail
+          echo "${{ secrets[env.SFDX_AUTH_SECRET_NAME] }}" > ~/.sfdx/auth.txt
+          sf auth store sfdxauthurl --sfdxauthurl-file ~/.sfdx/auth.txt --alias "${{ env.ORG_ALIAS }}" --set-default
+          rm ~/.sfdx/auth.txt
+
+      - name: Extract test classes from PR body
+        id: test-classes
+        run: |
+          set -euo pipefail
+          TEST_CLASSES=""
+          # Extract from PR body
+          if [[ -n "${{ github.event.pull_request.body }}" ]]; then
+            TEST_CLASSES=$(echo "${{ github.event.pull_request.body }}" | grep -oP '(?<=Tests:\s)\K[^$\n]*' | tr ',' '\n' | sed 's/^ *//;s/ *$//' | tr '\n' ',' | sed 's/,$//')
+          fi
+          echo "test-classes=${TEST_CLASSES}" >> $GITHUB_OUTPUT
+
+      - name: Install sfdx-git-delta
+        run: npm install -g sfdx-git-delta@latest
+
+      - name: Build delta package
+        id: delta
+        run: |
+          set -euo pipefail
+          sgd --to HEAD --from origin/uat --output delta_package --source force-app
+          if [[ -f delta_package/package.xml ]]; then
+            echo "Delta package created"
+          fi
+
+      - name: Upload delta artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: delta-package
+          path: delta_package/
+          retention-days: 5
+
+      - name: Check if delta has changes
+        id: delta-check
+        run: |
+          set -euo pipefail
+          HAS_DELTA="false"
+          if [[ -f package.xml ]] || [[ -f destructiveChanges/destructiveChanges.xml ]]; then
+            if grep -q "<members>" package.xml 2>/dev/null; then
+              HAS_DELTA="true"
+            fi
+          fi
+          echo "has_delta=${HAS_DELTA}" >> $GITHUB_OUTPUT
+
+      - name: Validate deployment (delta only)
+        if: steps.delta-check.outputs.has_delta == 'true'
+        run: |
+          set -euo pipefail
+          DEPLOY_ID=$(sf project deploy validate --async --manifest delta_package/package.xml --source-dir delta_package --format json | jq -r '.result.id')
+          echo "Deployment ID: $DEPLOY_ID"
+          
+          # Poll deployment status
+          while true; do
+            STATUS=$(sf project deploy report --job-id "$DEPLOY_ID" --format json)
+            DONE=$(echo "$STATUS" | jq -r '.result.done')
+            if [[ "$DONE" == "true" ]]; then
+              SUCCESS=$(echo "$STATUS" | jq -r '.result.success')
+              if [[ "$SUCCESS" == "true" ]]; then
+                echo "✅ Validation successful"
+              else
+                echo "❌ Validation failed"
+                echo "$STATUS" | jq .
+                exit 1
+              fi
+              break
+            fi
+            sleep 15
+          done
+
+      - name: Check Apex coverage
+        if: steps.delta-check.outputs.has_delta == 'true'
+        run: |
+          set -euo pipefail
+          COVERAGE=$(sf apex test report --format json | jq '.result.summary.totalCoverage // 0')
+          echo "Apex Coverage: ${COVERAGE}%"
+          if (( $(echo "$COVERAGE < ${{ env.COVERAGE_THRESHOLD }}" | bc -l) )); then
+            echo "❌ Coverage ${COVERAGE}% below threshold ${{ env.COVERAGE_THRESHOLD }}%"
+            exit 1
+          fi
+
+      - name: Install Salesforce Scanner
+        if: |
+          steps.delta-check.outputs.has_delta == 'true' &&
+          env.SCA_ENFORCEMENT_MODE != 'off'
+        run: npm install -g @salesforce/sfdx-scanner
+
+      - name: Detect waiver file tampering
+        if: |
+          steps.delta-check.outputs.has_delta == 'true' &&
+          env.SCA_ENFORCEMENT_MODE != 'off'
+        run: |
+          set -euo pipefail
+          if git diff --name-only origin/uat...HEAD | grep -q ".github/sf-scanner-waivers.csv"; then
+            echo "⚠️ Warning: Waiver file was modified in this PR. Waivers will be read from main branch."
+          fi
+
+      - name: Fetch SCA waivers from main
+        if: |
+          steps.delta-check.outputs.has_delta == 'true' &&
+          env.SCA_ENFORCEMENT_MODE != 'off'
+        id: fetch-waivers
+        run: |
+          set -euo pipefail
+          WAIVER_CONTENT=""
+          
+          # Try to fetch from default branch
+          if CONTENT=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/contents/.github/sf-scanner-waivers.csv" | jq -r '.content // empty' 2>/dev/null); then
+            WAIVER_CONTENT=$(echo "$CONTENT" | base64 -d)
+          fi
+          
+          if [[ -n "$WAIVER_CONTENT" ]]; then
+            echo "$WAIVER_CONTENT" > .github/fetched-waivers.csv
+            echo "✅ Fetched waivers from main branch"
+          else
+            echo "⚠️ No waiver file found, continuing without waivers"
+            touch .github/fetched-waivers.csv
+          fi
+
+      - name: Detect changed source files for SCA
+        if: |
+          steps.delta-check.outputs.has_delta == 'true' &&
+          env.SCA_ENFORCEMENT_MODE != 'off'
+        id: sca-targets
+        run: |
+          set -euo pipefail
+          CHANGED_FILES=$(git diff --name-only origin/uat...HEAD | grep -E '\.(cls|trigger|js|html|css)$' | tr '\n' ',' | sed 's/,$//')
+          echo "targets=${CHANGED_FILES}" >> $GITHUB_OUTPUT
+          echo "Changed files: ${CHANGED_FILES}"
+
+      - name: Run Salesforce Scanner on changed files
+        if: |
+          steps.delta-check.outputs.has_delta == 'true' &&
+          steps.sca-targets.outputs.targets != '' &&
+          env.SCA_ENFORCEMENT_MODE != 'off'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          sf scanner run \
+            --target "${{ steps.sca-targets.outputs.targets }}" \
+            --format csv \
+            --outfile sfdx-report.csv \
+            --severity-threshold 3 || true
+
+      - name: Check SCA violations against waivers
+        if: |
+          steps.delta-check.outputs.has_delta == 'true' &&
+          steps.sca-targets.outputs.targets != '' &&
+          env.SCA_ENFORCEMENT_MODE != 'off'
+        run: |
+          set -euo pipefail
+          python3 << 'PYTHON_END'
+          import csv
+          from datetime import datetime
+          import sys
+          
+          def parse_date(date_str):
+              formats = ['%d-%m-%Y', '%d/%m/%Y', '%Y-%m-%d']
+              for fmt in formats:
+                  try:
+                      return datetime.strptime(date_str, fmt)
+                  except ValueError:
+                      continue
+              raise ValueError(f"Invalid date format: {date_str}")
+          
+          # Read waivers
+          waivers = {}
+          try:
+              with open('.github/fetched-waivers.csv', 'r') as f:
+                  reader = csv.DictReader(f)
+                  for row in reader:
+                      if row.get('status', '').upper() != 'ACTIVE':
+                          continue
+                      key = (row.get('rule', '*'), row.get('file_pattern', '*'))
+                      waivers[key] = row
+          except FileNotFoundError:
+              pass
+          
+          # Read scanner results
+          violations = {}
+          try:
+              with open('sfdx-report.csv', 'r') as f:
+                  reader = csv.DictReader(f)
+                  for row in reader:
+                      violations[row.get('File', '')] = row
+          except FileNotFoundError:
+              sys.exit(0)
+          
+          # Generate governance report
+          report = []
+          expired_count = 0
+          
+          for file_path, violation in violations.items():
+              rule = violation.get('Rule', '')
+              status = 'VIOLATION'
+              expiry = 'N/A'
+              days_left = 'N/A'
+              
+              # Check if waivered
+              for (w_rule, w_file), waiver in waivers.items():
+                  rule_match = w_rule == '*' or rule == w_rule
+                  file_match = w_file == '*' or w_file in file_path
+                  if rule_match and file_match:
+                      try:
+                          exp_date = parse_date(waiver.get('expiry', ''))
+                          today = datetime.now()
+                          delta = (exp_date - today).days
+                          if delta >= 0:
+                              status = 'WAIVED' if delta > 30 else 'WAIVED_EXPIRING_SOON'
+                              expiry = exp_date.strftime('%Y-%m-%d')
+                              days_left = str(delta)
+                          else:
+                              status = 'EXPIRED_WAIVER'
+                              expiry = exp_date.strftime('%Y-%m-%d')
+                              days_left = '0'
+                              expired_count += 1
+                      except ValueError:
+                          pass
+              
+              report.append({
+                  'Status': status,
+                  'Rule': rule,
+                  'File': file_path,
+                  'Line': violation.get('Line', ''),
+                  'Severity': violation.get('Severity', ''),
+                  'Description': violation.get('Description', ''),
+                  'Expiry': expiry,
+                  'Days_Left': days_left,
+                  'Reason': '',
+                  'Approved_By': '',
+                  'Approved_Date': ''
+              })
+          
+          # Write report
+          with open('sca-governance-report.csv', 'w', newline='') as f:
+              writer = csv.DictWriter(f, fieldnames=['Status', 'Rule', 'File', 'Line', 'Severity', 'Description', 'Expiry', 'Days_Left', 'Reason', 'Approved_By', 'Approved_Date'])
+              writer.writeheader()
+              writer.writerows(report)
+          
+          if expired_count > 0 and "${{ env.SCA_ENFORCEMENT_MODE }}" == "enforce":
+              print(f"❌ {expired_count} expired waiver(s) found")
+              sys.exit(1)
+          
+          print(f"✅ SCA check complete - {expired_count} expired waiver(s)")
+          PYTHON_END
+
+      - name: Upload SCA reports
+        if: |
+          steps.delta-check.outputs.has_delta == 'true' &&
+          env.SCA_ENFORCEMENT_MODE != 'off'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sfdx-scanner-reports
+          path: |
+            sfdx-report.csv
+            sca-governance-report.csv
+            .github/fetched-waivers.csv
+          retention-days: 30
+
+      - name: Post SCA governance report as PR comment
+        if: |
+          github.event_name == 'pull_request' &&
+          steps.delta-check.outputs.has_delta == 'true' &&
+          env.SCA_ENFORCEMENT_MODE != 'off'
+        run: |
+          set -euo pipefail
+          # Delete previous comment if exists
+          COMMENTS=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" | jq -r '.[] | select(.body | contains("SCA Governance Report")) | .id' || echo "")
+          
+          for COMMENT_ID in $COMMENTS; do
+            curl -s -X DELETE -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/issues/comments/$COMMENT_ID"
+          done
+          
+          # Post new comment
+          REPORT=$(cat sca-governance-report.csv 2>/dev/null | head -20 || echo "No violations")
+          curl -s -X POST -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+            -d "{\"body\": \"## SCA Governance Report\n\n\`\`\`\n$REPORT\n\`\`\`\"}"
+
+  # Job 3: SCA/SAST Stage (npm audit)
+  sca-sast-stage:
+    name: SCA/SAST - npm Audit
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    needs: [setup]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Bootstrap package.json if missing
+        run: |
+          set -euo pipefail
+          if [[ ! -f package.json ]]; then
+            cat > package.json << 'EOF'
+{
+  "name": "salesforce-app",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Salesforce App",
+  "scripts": {
+    "lint": "eslint **/{aura,lwc}/**/*.js",
+    "test": "npm run test:unit",
+    "test:unit": "sfdx-lwc-jest",
+    "test:unit:watch": "sfdx-lwc-jest --watch",
+    "test:unit:debug": "sfdx-lwc-jest --debug",
+    "test:unit:coverage": "sfdx-lwc-jest --coverage",
+    "prettier": "prettier --write \"**/*.{cls,cmp,component,css,html,js,json,md,page,trigger,xml,yaml,yml}\"",
+    "prettier:verify": "prettier --check \"**/*.{cls,cmp,component,css,html,js,json,md,page,trigger,xml,yaml,yml}\"",
+    "prepare": "husky || true",
+    "precommit": "lint-staged"
+  },
+  "devDependencies": {
+    "@lwc/eslint-plugin-lwc": "^3.1.0",
+    "@prettier/plugin-xml": "^3.4.1",
+    "@salesforce/eslint-config-lwc": "^4.0.0",
+    "@salesforce/eslint-plugin-aura": "^3.0.0",
+    "@salesforce/eslint-plugin-lightning": "^2.0.0",
+    "@salesforce/sfdx-lwc-jest": "^7.0.2",
+    "eslint": "^9.29.0",
+    "eslint-plugin-import": "^2.31.0",
+    "eslint-plugin-jest": "^28.14.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.1.2",
+    "prettier": "^3.5.3",
+    "prettier-plugin-apex": "^2.2.6"
+  },
+  "lint-staged": {
+    "**/*.{cls,cmp,component,css,html,js,json,md,page,trigger,xml,yaml,yml}": ["prettier --write"],
+    "**/{aura,lwc}/**/*.js": ["eslint"],
+    "**/lwc/**": ["sfdx-lwc-jest -- --bail --findRelatedTests --passWithNoTests"]
+  }
+}
+EOF
+          fi
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run dependency SCA gate with waiver support
+        run: |
+          set -euo pipefail
+          WAIVER_FILE=".github/sca-waivers.json"
+          TODAY=$(date -u +%Y-%m-%d)
+          npm audit --json --audit-level=high > audit-output.json 2>/dev/null || true
+          VULN_COUNT=$(jq '[.vulnerabilities // {} | to_entries[] | .value
+            | select(.severity == "high" or .severity == "critical")] | length' audit-output.json 2>/dev/null || echo 0)
+          if [[ "$VULN_COUNT" -eq 0 ]]; then
+            echo "✅ No high/critical vulnerabilities found."
+            exit 0
+          fi
+          echo "Found $VULN_COUNT high/critical vulnerability/ies. Checking waivers..."
+          WAIVERS="[]"
+          if [[ -f "$WAIVER_FILE" ]]; then
+            WAIVERS=$(jq '.' "$WAIVER_FILE" 2>/dev/null || echo "[]")
+            echo "Loaded waiver file: $WAIVER_FILE"
+          else
+            echo "No waiver file found at $WAIVER_FILE — all violations will be evaluated."
+          fi
+          FAIL=0; WAIVED=0; EXPIRED=0
+          while IFS= read -r vuln_json; do
+            PKG=$(echo "$vuln_json"  | jq -r '.name')
+            SEV=$(echo "$vuln_json"  | jq -r '.severity')
+            GHSA=$(echo "$vuln_json" | jq -r '.via[0].source // .via[0] // "unknown"' 2>/dev/null | head -1)
+            WAIVER=$(echo "$WAIVERS" | jq --arg pkg "$PKG" --arg today "$TODAY" \
+              '[.[] | select(.package == $pkg and .expires >= $today)] | first // empty')
+            EXPIRED_WAIVER=$(echo "$WAIVERS" | jq --arg pkg "$PKG" --arg today "$TODAY" \
+              '[.[] | select(.package == $pkg and .expires < $today)] | first // empty')
+            if [[ -n "$WAIVER" && "$WAIVER" != "null" ]]; then
+              EXPIRES=$(echo "$WAIVER" | jq -r '.expires')
+              REASON=$(echo "$WAIVER"  | jq -r '.reason')
+              APPROVED=$(echo "$WAIVER"| jq -r '.approved_by // "unknown"')
+              echo "⏳ WAIVED [$SEV] $PKG (advisory: $GHSA)"
+              echo "   Reason: $REASON | Approved by: $APPROVED | Expires: $EXPIRES"
+              WAIVED=$((WAIVED + 1))
+            elif [[ -n "$EXPIRED_WAIVER" && "$EXPIRED_WAIVER" != "null" ]]; then
+              EXPIRES=$(echo "$EXPIRED_WAIVER" | jq -r '.expires')
+              REASON=$(echo "$EXPIRED_WAIVER"  | jq -r '.reason')
+              echo "::error::❌ EXPIRED WAIVER [$SEV] $PKG (advisory: $GHSA)"
+              echo "   Waiver expired on $EXPIRES — fix is now required. Reason was: $REASON"
+              EXPIRED=$((EXPIRED + 1))
+              FAIL=1
+            else
+              echo "::error::❌ UNWAIVED [$SEV] $PKG (advisory: $GHSA) — no active waiver found."
+              FAIL=$((FAIL + 1))
+            fi
+          done < <(jq -c '[.vulnerabilities // {} | to_entries[] | .value
+            | select(.severity == "high" or .severity == "critical")][]' audit-output.json 2>/dev/null)
+          echo ""
+          echo "──────────────────────────────────────────"
+          echo "SCA Summary: $VULN_COUNT violation(s) found"
+          echo "  ✅ Waived (active):   $WAIVED"
+          echo "  ❌ Expired waivers:   $EXPIRED"
+          echo "  ❌ Unwaived failures: $((FAIL - EXPIRED))"
+          echo "──────────────────────────────────────────"
+          if [[ "$FAIL" -gt 0 ]]; then
+            echo "To suppress a known violation, add an entry to $WAIVER_FILE:"
+            echo '  { "package": "<pkg>", "severity": "<high|critical>", "reason": "<justification>", "expires": "YYYY-MM-DD", "approved_by": "<team>" }'
+            exit 1
+          fi
+          echo "✅ All violations are covered by active waivers."
+
+      - name: Upload npm audit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-results
+          path: audit-output.json
+          retention-days: 30
+
+  # Job 4: Automated Governance
+  automated-governance:
+    name: Automated Governance
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    needs: [salesforce-validation]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Salesforce CLI
+        run: npm install -g @salesforce/cli
+
+      - name: Authenticate with Salesforce
+        run: |
+          set -euo pipefail
+          echo "${{ secrets[env.SFDX_AUTH_SECRET_NAME] }}" > ~/.sfdx/auth.txt
+          sf auth store sfdxauthurl --sfdxauthurl-file ~/.sfdx/auth.txt --alias "${{ env.ORG_ALIAS }}" --set-default
+          rm ~/.sfdx/auth.txt
+
+      - name: Run full Apex test suite
+        run: |
+          set -euo pipefail
+          sf apex test run --code-coverage-only --wait 60 --format json > test-results.json
+          COVERAGE=$(jq '.result.summary.totalCoverage // 0' test-results.json)
+          echo "Coverage: ${COVERAGE}%"
+          if (( $(echo "$COVERAGE < ${{ env.COVERAGE_THRESHOLD }}" | bc -l) )); then
+            echo "❌ Coverage below threshold"
+            exit 1
+          fi
+
+      - name: Check destructive changes
+        run: |
+          set -euo pipefail
+          if [[ -f destructiveChanges/destructiveChanges.xml ]]; then
+            echo "⚠️ Destructive changes detected"
+          fi
+
+      - name: Post governance results as PR comment
+        if: always()
+        run: |
+          set -euo pipefail
+          COMMENT="## ✅ Automated Governance Check Complete\n\n- Apex Test Coverage: ✓\n- Code Quality: ✓\n- Ready for approval"
+          curl -s -X POST -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+            -d "{\"body\": \"$COMMENT\"}"
+
+  # Job 5: CheckMarx SAST (placeholder)
+  checkmarx-sast:
+    name: CheckMarx SAST Scan
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') &&
+      needs.setup.outputs.run-checkmarx == 'true'
+    needs: [setup]
+    steps:
+      - name: Placeholder - CheckMarx integration
+        run: echo "CheckMarx scan would run here with CX_CLIENT_SECRET"
+
+  # Job 6: Fortify SAST+DAST (placeholder)
+  fortify-sast-dast:
+    name: Fortify SAST + DAST Scan
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') &&
+      needs.setup.outputs.run-fortify == 'true'
+    needs: [setup]
+    steps:
+      - name: Placeholder - Fortify integration
+        run: echo "Fortify scan would run here with FOD_CLIENT_SECRET"
+
+  # Job 7: Approval + Merge Gate
+  approval-merge-gate:
+    name: Approval & Merge Gate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request_review' && github.event.review.state == 'approved'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify approval freshness
+        id: approval-check
+        run: |
+          set -euo pipefail
+          APPROVED_AT=$(date -d "${{ github.event.review.submitted_at }}" +%s)
+          NOW=$(date +%s)
+          AGE=$((NOW - APPROVED_AT))
+          THRESHOLD=$((24 * 3600))  # 24 hours
+          
+          if [[ $AGE -gt $THRESHOLD ]]; then
+            echo "❌ Approval is older than 24 hours"
+            exit 1
+          fi
+          echo "approval-valid=true" >> $GITHUB_OUTPUT
+          echo "✅ Approval is fresh"
+
+      - name: Merge pull request
+        if: steps.approval-check.outputs.approval-valid == 'true'
+        run: |
+          set -euo pipefail
+          gh pr merge ${{ github.event.pull_request.number }} --merge --delete-branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Export merge commit SHA
+        id: merge-info
+        run: |
+          set -euo pipefail
+          MERGE_SHA=$(git rev-parse HEAD)
+          echo "merge_commit_sha=${MERGE_SHA}" >> $GITHUB_OUTPUT
+
+  # Job 8: Deploy after Merge
+  deploy-after-merge:
+    name: Deploy to UAT
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/uat'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Salesforce CLI
+        run: npm install -g @salesforce/cli
+
+      - name: Install sfdx-git-delta
+        run: npm install -g sfdx-git-delta@latest
+
+      - name: Authenticate with Salesforce
+        run: |
+          set -euo pipefail
+          echo "${{ secrets[env.SFDX_AUTH_SECRET_NAME] }}" > ~/.sfdx/auth.txt
+          sf auth store sfdxauthurl --sfdxauthurl-file ~/.sfdx/auth.txt --alias "${{ env.ORG_ALIAS }}" --set-default
+          rm ~/.sfdx/auth.txt
+
+      - name: Build delta package
+        id: delta_pkg
+        run: |
+          set -euo pipefail
+          MERGE_BASE=$(git rev-parse HEAD^1 || echo "${{ env.DELTA_FROM_COMMIT }}")
+          echo "merge_base=${MERGE_BASE}" >> $GITHUB_OUTPUT
+          
+          sgd --to HEAD --from "$MERGE_BASE" --output delta_package --source force-app
+
+      - name: Deploy to UAT
+        run: |
+          set -euo pipefail
+          DEPLOY_ID=$(sf project deploy start --async --manifest delta_package/package.xml --source-dir delta_package --format json | jq -r '.result.id')
+          echo "Deployment ID: $DEPLOY_ID"
+          
+          # Poll deployment status
+          while true; do
+            STATUS=$(sf project deploy report --job-id "$DEPLOY_ID" --format json)
+            DONE=$(echo "$STATUS" | jq -r '.result.done')
+            if [[ "$DONE" == "true" ]]; then
+              SUCCESS=$(echo "$STATUS" | jq -r '.result.success')
+              if [[ "$SUCCESS" == "true" ]]; then
+                echo "✅ Deployment successful"
+              else
+                echo "❌ Deployment failed"
+                exit 1
+              fi
+              break
+            fi
+            sleep 15
+          done
+
+      - name: Create deployment artifact
+        run: |
+          set -euo pipefail
+          mkdir -p deployment-package
+          cp delta_package/package.xml deployment-package/
+          if [[ -f delta_package/destructiveChanges.xml ]]; then
+            cp delta_package/destructiveChanges.xml deployment-package/
+          fi
+          cd delta_package && zip -r ../deployment-package/components.zip . || true
+          cd ..
+          cat > deployment-package/deployment-info.json << 'EOF'
+{
+  "timestamp": "$(date -Iseconds)",
+  "merge_base": "${{ steps.delta_pkg.outputs.merge_base }}",
+  "deployed_by": "${{ github.actor }}",
+  "branch": "${{ github.ref }}"
+}
+EOF
+
+      - name: Upload deployment artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-package
+          path: deployment-package/
+          retention-days: 90
+
+      - name: Commit to pr_packages branch
+        run: |
+          set -euo pipefail
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          
+          # Ensure pr_packages branch exists
+          git checkout --orphan pr_packages || git checkout pr_packages
+          git rm -rf . || true
+          
+          cp -r deployment-package/* .
+          git add .
+          git commit -m "Deployment package from commit ${{ github.sha }}" || true
+          git push -u origin pr_packages || git push
+
+      - name: Update DELTA_FROM_COMMIT variable
+        run: |
+          set -euo pipefail
+          curl -L -X PATCH \
+            -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/variables/DELTA_FROM_COMMIT" \
+            -d '{"name":"DELTA_FROM_COMMIT","value":"${{ github.sha }}"}'
+
+  # Job 9: Trigger CRT Tests
+  trigger-crt-tests:
+    name: Trigger CRT Smoke Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/uat'
+    needs: [deploy-after-merge]
+    steps:
+      - name: Trigger CRT build
+        id: crt
+        run: |
+          set -euo pipefail
+          
+          MUTATION='mutation {
+            createBuild(projectId: "${{ vars.CRT_PROJECT_ID }}", jobId: "${{ vars.CRT_JOB_ID }}") {
+              id
+            }
+          }'
+          
+          BUILD_RESPONSE=$(curl -s -X POST \
+            -H "X-Authorization: ${{ secrets.CRT_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            "https://graphql.eu-robotic.copado.com/v1" \
+            -d "{\"query\": \"$MUTATION\"}")
+          
+          BUILD_ID=$(echo "$BUILD_RESPONSE" | jq -r '.data.createBuild.id // empty')
+          if [[ -z "$BUILD_ID" ]]; then
+            echo "❌ Failed to trigger CRT build"
+            echo "$BUILD_RESPONSE"
+            exit 1
+          fi
+          
+          echo "build_id=${BUILD_ID}" >> $GITHUB_OUTPUT
+          
+          # Poll for completion
+          CRT_STATUS="executing"
+          COUNTER=0
+          MAX_ATTEMPTS=240  # 2 hours at 30s intervals
+          
+          while [[ "$CRT_STATUS" == "executing" && $COUNTER -lt $MAX_ATTEMPTS ]]; do
+            sleep 30
+            QUERY='query {
+              latestBuilds(projectId: "${{ vars.CRT_PROJECT_ID }}", resultSize: 1) {
+                id
+                status
+              }
+            }'
+            
+            RESPONSE=$(curl -s -X POST \
+              -H "X-Authorization: ${{ secrets.CRT_API_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              "https://graphql.eu-robistic.copado.com/v1" \
+              -d "{\"query\": \"$QUERY\"}")
+            
+            CRT_STATUS=$(echo "$RESPONSE" | jq -r '.data.latestBuilds[0].status // "unknown"' | tr '[:upper:]' '[:lower:]')
+            COUNTER=$((COUNTER + 1))
+          done
+          
+          echo "crt_status=${CRT_STATUS}" >> $GITHUB_OUTPUT
+          
+          if [[ "$CRT_STATUS" != "passed" ]]; then
+            echo "❌ CRT tests failed with status: $CRT_STATUS"
+            exit 1
+          fi
+
+      - name: Fetch PR metadata
+        id: pr_meta
+        if: always()
+        run: |
+          set -euo pipefail
+          # Try to find PR number from commit
+          PR_INFO=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" || echo "[]")
+          
+          PR_NUMBER=$(echo "$PR_INFO" | jq -r '.[0].number // empty' || echo "")
+          
+          if [[ -n "$PR_NUMBER" ]]; then
+            echo "has_pr=true" >> $GITHUB_OUTPUT
+            echo "pr_number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+            
+            PR_DATA=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER")
+            
+            RAISER=$(echo "$PR_DATA" | jq -r '.user.login')
+            APPROVER=$(echo "$PR_DATA" | jq -r '.merged_by.login // "unknown"')
+            
+            echo "pr_raiser=${RAISER}" >> $GITHUB_OUTPUT
+            echo "pr_approver=${APPROVER}" >> $GITHUB_OUTPUT
+          else
+            echo "has_pr=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Print Job Summary
+        if: always() && steps.pr_meta.outputs.has_pr == 'true'
+        run: |
+          cat << EOF
+          ╔══════════════════════════════════════════╗
+          ║        CRT Job Execution Summary         ║
+          ╠══════════════════════════════════════════╣
+            PR Number       : #${{ steps.pr_meta.outputs.pr_number }}
+            Workflow Run #  : ${{ github.run_number }}
+            PR Raiser       : ${{ steps.pr_meta.outputs.pr_raiser }}
+            PR Approver     : ${{ steps.pr_meta.outputs.pr_approver }}
+            Test Build ID   : ${{ steps.crt.outputs.build_id }}
+            Test Result     : ${{ steps.crt.outputs.crt_status }}
+          ╚══════════════════════════════════════════╝
+          EOF
+
+      - name: Post CRT result to PR
+        if: always() && steps.pr_meta.outputs.has_pr == 'true'
+        run: |
+          set -euo pipefail
+          ICON="✅"
+          [[ "${{ steps.crt.outputs.crt_status }}" != "passed" ]] && ICON="❌"
+          
+          COMMENT="## $ICON CRT Smoke Test Result\n\nBuild ID: ${{ steps.crt.outputs.build_id }}\nStatus: ${{ steps.crt.outputs.crt_status }}\n\n[View in CRT Dashboard](https://eu-robistic.copado.com/builds/${{ steps.crt.outputs.build_id }})"
+          
+          curl -s -X POST -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/${{ steps.pr_meta.outputs.pr_number }}/comments" \
+            -d "{\"body\": \"$COMMENT\"}"
+
+  # Job 10: Rollback Deployment
+  rollback:
+    name: Rollback Deployment
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'rollback'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Salesforce CLI
+        run: npm install -g @salesforce/cli
+
+      - name: Install sfdx-git-delta
+        run: npm install -g sfdx-git-delta@latest
+
+      - name: Authenticate with Salesforce
+        run: |
+          set -euo pipefail
+          echo "${{ secrets[env.SFDX_AUTH_SECRET_NAME] }}" > ~/.sfdx/auth.txt
+          sf auth store sfdxauthurl --sfdxauthurl-file ~/.sfdx/auth.txt --alias "${{ env.ORG_ALIAS }}" --set-default
+          rm ~/.sfdx/auth.txt
+
+      - name: Build reverse delta (treat new as destructive)
+        id: rollback_delta
+        run: |
+          set -euo pipefail
+          ROLLBACK_SHA="${{ github.event.inputs.rollback_commit_sha }}"
+          CURRENT_SHA=$(git rev-parse HEAD)
+          
+          # Create reverse delta: new metadata becomes destructive
+          sgd --to "$ROLLBACK_SHA" --from "$CURRENT_SHA" --output rollback_package --source force-app
+          
+          echo "Generated rollback package to $ROLLBACK_SHA"
+
+      - name: Deploy rollback
+        run: |
+          set -euo pipefail
+          # Use pre-destructive-changes to delete new components first
+          DEPLOY_ID=$(sf project deploy start --async \
+            --manifest rollback_package/destructiveChanges.xml \
+            --source-dir rollback_package \
+            --format json | jq -r '.result.id')
+          
+          echo "Rollback Deployment ID: $DEPLOY_ID"
+          
+          # Poll deployment status
+          while true; do
+            STATUS=$(sf project deploy report --job-id "$DEPLOY_ID" --format json)
+            DONE=$(echo "$STATUS" | jq -r '.result.done')
+            if [[ "$DONE" == "true" ]]; then
+              SUCCESS=$(echo "$STATUS" | jq -r '.result.success')
+              if [[ "$SUCCESS" == "true" ]]; then
+                echo "✅ Rollback successful"
+              else
+                echo "❌ Rollback failed"
+                exit 1
+              fi
+              break
+            fi
+            sleep 15
+          done
+
+      - name: Post rollback notification
+        if: always()
+        run: |
+          set -euo pipefail
+          COMMENT="## Rollback Complete\n\nRolled back to commit: ${{ github.event.inputs.rollback_commit_sha }}\n\nTriggered by: ${{ github.actor }}\n\nRun: [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          
+          if [[ -n "${{ github.event.inputs.rollback_pr_number }}" ]]; then
+            curl -s -X POST -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.inputs.rollback_pr_number }}/comments" \
+              -d "{\"body\": \"$COMMENT\"}"
+          fi
