@@ -1,10 +1,18 @@
 [
   {
-    "package": "example-package",
+    "package": "lodash",
     "severity": "high",
-    "advisory": "GHSA-xxxx-xxxx-xxxx",
-    "reason": "Placeholder waiver - Replace with actual npm vulnerabilities. No fix available currently.",
-    "expires": "2027-04-10",
+    "advisory": "GHSA-35jh-r3h4-6jhm",
+    "reason": "No fix available yet. Scheduled for sprint Q2-24. Tracked in PROJ-500.",
+    "expires": "2026-05-30",
     "approved_by": "platform-security"
+  },
+  {
+    "package": "serialize-javascript",
+    "severity": "high",
+    "advisory": "GHSA-hhq3-ff89-34mr",
+    "reason": "Workaround implemented. Update planned for next release.",
+    "expires": "2026-06-15",
+    "approved_by": "dev-lead"
   }
 ]

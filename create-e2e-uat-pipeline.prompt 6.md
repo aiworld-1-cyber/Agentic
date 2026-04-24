@@ -62,8 +62,16 @@ Create a workflow named `UAT End-to-End Pipeline` with the following characteris
 **Job 3 — `sca-sast-stage`**: SCA/SAST Stage (npm audit)
 - `needs: [setup]` (runs in **parallel** with Jobs 2, 5, 6)
 - **Condition:** `pull_request` or `workflow_dispatch`
-- Runs `npm audit --json`, checks against `.github/sca-waivers.json`, fails on unwaived/expired violations
 - **package.json bootstrap:** same guard as Job 2 — if no `package.json` exists a standard one is created before `npm install` so `npm audit` does not ENOENT
+- **npm waiver check — MUST be implemented entirely in bash + `jq`. NEVER use Python scripts, Python heredocs, or `cat > file.py << 'PYTHON_SCRIPT'` for this step.** Implementation pattern:
+  1. `WAIVER_FILE=".github/sca-waivers.json"` and `TODAY=$(date -u +%Y-%m-%d)`
+  2. `npm audit --json --audit-level=high > audit-output.json 2>/dev/null || true`
+  3. Count high/critical vulns with `jq`; if 0 — `exit 0`
+  4. Load waivers with bash `if [[ -f "$WAIVER_FILE" ]]; then WAIVERS=$(jq '.' "$WAIVER_FILE"); else WAIVERS="[]"; fi`
+  5. `while IFS= read -r vuln_json; do ... done` — iterate, check active/expired waivers per package using `jq --arg`
+  6. Print summary; `exit 1` only if FAIL > 0
+  7. Upload `audit-output.json` artifact
+- **Critical:** bash `if`/`while`/`for` blocks must always be written as bash — NEVER embed them inside a `<< 'HEREDOC'` block for another language
 
 **Job 4 — `automated-governance`**: Automated Hard Gates
 - `needs: [salesforce-validation]`
@@ -228,3 +236,20 @@ JSON array for npm audit waivers:
 6. Never combine `--async` and `--wait` on the same deploy command
 7. Summarize what was created/updated and any required configuration
 8. `SCA_ENFORCEMENT_MODE` must be documented in every relevant doc file. Set it to `off` to bypass all SCA steps during initial project phase, `warn` for informational-only, `enforce` (default) to fail on expired waivers.
+
+## Critical Code-Generation Rules (MUST follow — these prevent runtime errors)
+
+9. **Never use Python scripts for waiver checking.** All waiver logic (npm audit, SCA) must be pure bash + `jq`. Do NOT generate `cat > *.py << 'PYTHON_SCRIPT'` blocks for this purpose.
+10. **Never embed bash control flow inside a heredoc.** When writing a file via `cat > file << 'HEREDOC'`, the content between the markers must be valid for that language only. Bash `if [ ... ]`, `while`, `for` etc. must be OUTSIDE any heredoc, not inside it. Example of the correct pattern:
+    ```bash
+    # CORRECT — bash guard wraps the heredoc
+    if [[ ! -f .github/sca-waivers.json ]]; then
+      echo "No waiver file found"
+    fi
+    # WRONG — bash guard inside a Python heredoc (causes SyntaxError)
+    cat > check.py << 'PYTHON_SCRIPT'
+    if [ -f .github/sca-waivers.json ]; then   # ← NEVER do this
+    PYTHON_SCRIPT
+    ```
+11. **Always use `set -euo pipefail`** at the top of multi-line `run:` blocks.
+12. **The npm audit waiver check step must follow the exact bash pattern** described in Job 3 above — read the existing workflow at `.github/workflows/e2e-uat-pipeline.yml` and copy that implementation verbatim rather than inventing a new approach.
