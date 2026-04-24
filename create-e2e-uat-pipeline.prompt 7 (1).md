@@ -34,7 +34,7 @@ Create a workflow named `UAT End-to-End Pipeline` with the following characteris
 - Triggers: `pull_request` only
 - **Outputs:** `has_delta` (bool) — set `true` if `package/package.xml` or `destructiveChanges/destructiveChanges.xml` contains members
 - Steps:
-  1. checkout (fetch-depth: 0) → setup-node 20 → **bootstrap `package.json` if missing** (writes full standard Salesforce `package.json` with eslint/prettier/jest/husky devDependencies via bash heredoc) → npm install → install Salesforce CLI
+  1. checkout (fetch-depth: 0) → setup-node 20 → **bootstrap `package.json` if missing** (writes full standard Salesforce `package.json` via bash heredoc — use EXACT versions below) → npm install → install Salesforce CLI
   2. Authenticate org from `secrets.CRT_UAT_AUTHURL`
   3. Extract test classes from PR body + comments (pattern: `Tests: Class1, Class2`)
   4. Install `sfdx-git-delta` → build delta package → upload delta artifact
@@ -62,8 +62,16 @@ Create a workflow named `UAT End-to-End Pipeline` with the following characteris
 **Job 3 — `sca-sast-stage`**: SCA/SAST Stage (npm audit)
 - `needs: [setup]` (runs in **parallel** with Jobs 2, 5, 6)
 - **Condition:** `pull_request` or `workflow_dispatch`
-- Runs `npm audit --json`, checks against `.github/sca-waivers.json`, fails on unwaived/expired violations
 - **package.json bootstrap:** same guard as Job 2 — if no `package.json` exists a standard one is created before `npm install` so `npm audit` does not ENOENT
+- **npm waiver check — MUST be implemented entirely in bash + `jq`. NEVER use Python scripts, Python heredocs, or `cat > file.py << 'PYTHON_SCRIPT'` for this step.** Implementation pattern:
+  1. `WAIVER_FILE=".github/sca-waivers.json"` and `TODAY=$(date -u +%Y-%m-%d)`
+  2. `npm audit --json --audit-level=high > audit-output.json 2>/dev/null || true`
+  3. Count high/critical vulns with `jq`; if 0 — `exit 0`
+  4. Load waivers with bash `if [[ -f "$WAIVER_FILE" ]]; then WAIVERS=$(jq '.' "$WAIVER_FILE"); else WAIVERS="[]"; fi`
+  5. `while IFS= read -r vuln_json; do ... done` — iterate, check active/expired waivers per package using `jq --arg`
+  6. Print summary; `exit 1` only if FAIL > 0
+  7. Upload `audit-output.json` artifact
+- **Critical:** bash `if`/`while`/`for` blocks must always be written as bash — NEVER embed them inside a `<< 'HEREDOC'` block for another language
 
 **Job 4 — `automated-governance`**: Automated Hard Gates
 - `needs: [salesforce-validation]`
@@ -118,6 +126,55 @@ Create a workflow named `UAT End-to-End Pipeline` with the following characteris
 - Input: `rollback_commit_sha` — the SHA to revert TO
 - Uses `sfdx-git-delta` in reverse: new metadata treated as destructive
 - Uses `--pre-destructive-changes` to delete new components before re-deploying prior state
+
+---
+
+## Canonical `package.json` devDependencies (MUST use these EXACT versions)
+
+When bootstrapping `package.json` (in any job that creates it if missing), use these exact version specifiers. **Do NOT guess or invent versions — only use what is listed here:**
+
+```json
+{
+  "name": "salesforce-app",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Salesforce App",
+  "scripts": {
+    "lint": "eslint **/{aura,lwc}/**/*.js",
+    "test": "npm run test:unit",
+    "test:unit": "sfdx-lwc-jest",
+    "test:unit:watch": "sfdx-lwc-jest --watch",
+    "test:unit:debug": "sfdx-lwc-jest --debug",
+    "test:unit:coverage": "sfdx-lwc-jest --coverage",
+    "prettier": "prettier --write \"**/*.{cls,cmp,component,css,html,js,json,md,page,trigger,xml,yaml,yml}\"",
+    "prettier:verify": "prettier --check \"**/*.{cls,cmp,component,css,html,js,json,md,page,trigger,xml,yaml,yml}\"",
+    "prepare": "husky || true",
+    "precommit": "lint-staged"
+  },
+  "devDependencies": {
+    "@lwc/eslint-plugin-lwc": "^3.1.0",
+    "@prettier/plugin-xml": "^3.4.1",
+    "@salesforce/eslint-config-lwc": "^4.0.0",
+    "@salesforce/eslint-plugin-aura": "^3.0.0",
+    "@salesforce/eslint-plugin-lightning": "^2.0.0",
+    "@salesforce/sfdx-lwc-jest": "^7.0.2",
+    "eslint": "^9.29.0",
+    "eslint-plugin-import": "^2.31.0",
+    "eslint-plugin-jest": "^28.14.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.1.2",
+    "prettier": "^3.5.3",
+    "prettier-plugin-apex": "^2.2.6"
+  },
+  "lint-staged": {
+    "**/*.{cls,cmp,component,css,html,js,json,md,page,trigger,xml,yaml,yml}": ["prettier --write"],
+    "**/{aura,lwc}/**/*.js": ["eslint"],
+    "**/lwc/**": ["sfdx-lwc-jest -- --bail --findRelatedTests --passWithNoTests"]
+  }
+}
+```
+
+> ⚠️ `@salesforce/eslint-plugin-aura` is at `^3.0.0` — do NOT use `^2.4.0` or any older version (it does not exist on npm and will cause `ETARGET` errors).
 
 ---
 
@@ -228,3 +285,20 @@ JSON array for npm audit waivers:
 6. Never combine `--async` and `--wait` on the same deploy command
 7. Summarize what was created/updated and any required configuration
 8. `SCA_ENFORCEMENT_MODE` must be documented in every relevant doc file. Set it to `off` to bypass all SCA steps during initial project phase, `warn` for informational-only, `enforce` (default) to fail on expired waivers.
+
+## Critical Code-Generation Rules (MUST follow — these prevent runtime errors)
+
+9. **Never use Python scripts for waiver checking.** All waiver logic (npm audit, SCA) must be pure bash + `jq`. Do NOT generate `cat > *.py << 'PYTHON_SCRIPT'` blocks for this purpose.
+10. **Never embed bash control flow inside a heredoc.** When writing a file via `cat > file << 'HEREDOC'`, the content between the markers must be valid for that language only. Bash `if [ ... ]`, `while`, `for` etc. must be OUTSIDE any heredoc, not inside it. Example of the correct pattern:
+    ```bash
+    # CORRECT — bash guard wraps the heredoc
+    if [[ ! -f .github/sca-waivers.json ]]; then
+      echo "No waiver file found"
+    fi
+    # WRONG — bash guard inside a Python heredoc (causes SyntaxError)
+    cat > check.py << 'PYTHON_SCRIPT'
+    if [ -f .github/sca-waivers.json ]; then   # ← NEVER do this
+    PYTHON_SCRIPT
+    ```
+11. **Always use `set -euo pipefail`** at the top of multi-line `run:` blocks.
+12. **The npm audit waiver check step must follow the exact bash pattern** described in Job 3 above — read the existing workflow at `.github/workflows/e2e-uat-pipeline.yml` and copy that implementation verbatim rather than inventing a new approach.
