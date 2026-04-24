@@ -571,7 +571,6 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     needs: [setup]
-    # Placeholder - implement with actual CheckMarx integration
     steps:
       - name: Check if CheckMarx enabled
         if: needs.setup.outputs.run-checkmarx == 'true'
@@ -582,7 +581,6 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     needs: [setup]
-    # Placeholder - implement with actual Fortify integration
     steps:
       - name: Check if Fortify enabled
         if: needs.setup.outputs.run-fortify == 'true'
