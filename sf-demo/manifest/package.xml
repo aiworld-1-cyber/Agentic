@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Package xmlns="http://soap.sforce.com/2006/04/metadata">
+    <types>
+        <members>AccountUtilityService</members>
+        <members>AccountUtilityServiceTest</members>
+        <members>CoverageDemoService</members>
+        <members>CoverageDemoServiceTest</members>
+        <members>DeploySmokeCheck</members>
+        <members>DeploySmokeCheckTest</members>
+        <members>SmokeTestPingResource</members>
+        <members>SmokeTestPingResourceTest</members>
+        <name>ApexClass</name>
+    </types>
+    <types>
+        <members>violationsDemo</members>
+        <name>LightningComponentBundle</name>
+    </types>
+    <version>66.0</version>
+</Package>
