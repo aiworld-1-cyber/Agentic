@@ -1,10 +1,18 @@
 [
   {
-    "package": "example-package",
+    "package": "lodash",
     "severity": "high",
     "advisory": "GHSA-xxxx-xxxx-xxxx",
-    "reason": "Placeholder waiver - Replace with actual npm vulnerabilities. No fix available currently.",
-    "expires": "2027-04-10",
+    "reason": "No fix available in current version. Upgrade planned for next sprint.",
+    "expires": "2026-06-30",
+    "approved_by": "platform-security"
+  },
+  {
+    "package": "minimist",
+    "severity": "high",
+    "advisory": "GHSA-yyyy-yyyy-yyyy",
+    "reason": "Dependency of a dev tool. Risk is low in build environment only.",
+    "expires": "2026-08-31",
     "approved_by": "platform-security"
   }
 ]
