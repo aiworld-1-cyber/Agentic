@@ -2,14 +2,21 @@ name: UAT End-to-End Pipeline
 
 on:
   pull_request:
-    branches: [main]
+    branches: 
+      - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - edited
+      - ready_for_review
     paths:
-      - 'force-app/**'
-      - '.github/workflows/e2e-uat-pipeline.yml'
-      - '.github/sf-scanner-waivers.csv'
-    types: [opened, reopened, synchronize, edited, ready_for_review]
+      - force-app/**
+      - .github/workflows/e2e-uat-pipeline.yml
+      - .github/sf-scanner-waivers.csv
   pull_request_review:
-    types: [submitted]
+    types: 
+      - submitted
   workflow_dispatch:
     inputs:
       scanner:
