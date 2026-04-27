@@ -148,6 +148,118 @@ sf org open --alias uat
 - Compares current state (HEAD) to rollback target commit
 - Components added since target → marked for deletion
 - Components modified since target → re-deployed from target version
+- Uses `--pre-destructive-changes` to delete first, then re-deploy
+
+**Example:**
+```
+Target commit (good):  MyClass v1, UtilService v1, Helper v1
+Current state (bad):   MyClass v2, UtilService v2, NewComponent v1
+
+Rollback will:
+  1. Delete NewComponent (added after target)
+  2. Re-deploy MyClass v1, UtilService v1 (reverted)
+  3. Keep Helper v1 (unchanged)
+```
+
+---
+
+## Section 3: Monitoring & Alerts
+
+### Key Metrics to Monitor
+
+| Metric | Target | Alert Threshold |
+|--------|--------|-----------------|
+| **Deployment Success Rate** | >95% | <90% |
+| **Average Validation Time** | <5 min | >10 min |
+| **Coverage Compliance** | ≥ THRESHOLD (85%) | <80% |
+| **SCA Violations** | 0 waived > 30 days | Any `EXPIRED_WAIVER` |
+| **CRT Test Pass Rate** | 100% | Any `failed` status |
+
+### Dashboard Links
+
+- **GitHub Actions:** `https://github.com/<org>/<repo>/actions`
+- **CRT Dashboard:** `https://eu-robotic.copado.com`
+- **Salesforce UAT Org:** `https://<instance>.salesforce.com`
+
+### Slack Notifications (Optional)
+
+Configure GitHub Actions to post notifications:
+1. Create a Slack workflow
+2. Trigger on workflow status changes
+3. Post to #deployments channel
+
+---
+
+## Section 4: Troubleshooting During Deployment
+
+### Deployment Hangs / Times Out
+
+**Symptoms:** Job runs > 30 minutes, no progress
+
+**Diagnosis:**
+```bash
+# Check org async deploy status
+sf project deploy report --job-id <deployment-id>
+```
+
+**Fix:**
+1. Manually cancel deployment in Salesforce
+2. Reduce package size (split into smaller PRs)
+3. Check org for locks (Setup → Apex Test Executions)
+
+### Coverage Check Fails but Tests Passed Locally
+
+**Symptoms:** Local coverage is 92%, pipeline fails at 85%
+
+**Diagnosis:**
+- Cloud org may have different test execution path
+- Mock objects or stubs may not count in cloud
+
+**Fix:**
+1. Increase test verbosity in pipeline logs
+2. Run same test suite in UAT org manually
+3. If still gap, reduce threshold temporarily or add more tests
+
+### CRT Tests Don't Trigger
+
+**Symptoms:** No CRT build ID in logs
+
+**Diagnosis:**
+- Check `CRT_API_TOKEN` secret is valid
+- Verify GraphQL endpoint is reachable
+- Confirm `CRT_PROJECT_ID` / `CRT_JOB_ID` are correct
+
+**Fix:**
+```bash
+# Test API endpoint manually
+curl -X POST https://graphql.eu-robotic.copado.com/v1 \
+  -H "X-Authorization: <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"query { latestBuilds(projectId: 73283, resultSize: 1) { id } }"}'
+```
+
+---
+
+## Section 5: Promotion to Production
+
+When ready to promote from UAT to higher environments:
+
+1. **Create release branch** from the successful UAT merge commit
+2. **Tag** with version (e.g., `v1.2.0`)
+3. **Create PR** to `prod` branch
+4. **Apply same gate** (approval + tests) for `prod`
+5. **Deploy** using same pipeline or manual promotion process
+6. **Post-deployment verification** in prod org
+
+**⚠️ Important:** Promote only from commits that have been validated + deployed to UAT.
+
+---
+
+## Links
+
+- [Pipeline Setup Guide](pipeline-setup.md)
+- [SCA Waivers Guide](sca-waivers.md)
+- [Troubleshooting Guide](troubleshooting.md)
 - Components deleted since target → restored
 
 **Deployment:**

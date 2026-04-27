@@ -99,6 +99,193 @@ Check `.github/sf-scanner-waivers.csv` for rule+file combo with past expiry date
 
 ---
 
+## Job: sca-sast-stage
+
+### Error: "UNWAIVED [critical] lodash"
+
+**Cause:** npm package has high/critical vulnerability, no active waiver in `.github/sca-waivers.json`.
+
+**Diagnosis:**
+```bash
+npm audit
+# Shows vulnerability details
+```
+
+**Fix (Option A — Upgrade package):**
+```bash
+npm install lodash@latest
+npm audit fix
+git add package*.json
+git commit -m "fix: Upgrade lodash to patch CVE-XXXX"
+git push
+```
+
+**Fix (Option B — Add waiver):**
+1. Update `.github/sca-waivers.json` on main branch
+2. Add entry with package name, severity, advisory ID, reason, expiry
+3. Commit, merge to main
+4. Re-run `sca-sast-stage` job
+
+---
+
+### Error: "EXPIRED WAIVER [high] minimist"
+
+**Cause:** npm waiver expiry date is in the past.
+
+**Fix:**
+1. Go to `.github/sca-waivers.json` on main branch
+2. Find the `minimist` entry
+3. Update `expires` field to future date (format: `YYYY-MM-DD`)
+4. Commit, merge to main
+5. Re-run `sca-sast-stage`
+
+---
+
+## Job: automated-governance
+
+### Error: "Destructive changes detected"
+
+**Cause:** PR includes deletion of Salesforce components (custom fields, custom objects, etc.)
+
+**Diagnosis:**
+Check PR comment from `automated-governance` job:
+```
+⚠️  DESTRUCTIVE CHANGES DETECTED
+deploySmokeCheck.cls-meta.xml
+helper_util__c (custom field)
+```
+
+**What this means:**
+- Components listed will be **deleted from the target org**
+- May affect dependent components (reports, flows, automation)
+
+**Fix (if deletion is intentional):**
+1. Add comment to PR: "Intentional deletion — Component X deprecated per PROJ-456"
+2. Tech lead reviews & approves
+3. Proceed with deployment
+
+**Fix (if deletion is accidental):**
+1. Remove the component from PR
+2. Keep in metadata without changes (do not stage deletion)
+3. Re-push to PR
+
+---
+
+## Job: deploy-after-merge
+
+### Error: "Deploy failed: ComponentNotFoundException"
+
+**Cause:** Attempting to deploy a component that doesn't exist in target org.
+
+**Diagnosis:**
+1. Download delta artifact
+2. Check `delta_package/package.xml`
+3. Verify all components exist in UAT org:
+   ```bash
+   sf sobject describe --sobject CustomObject__c
+   ```
+
+**Fix:**
+1. Remove nonexistent component from source
+2. Or create dependent components first in separate PR
+3. Re-push
+
+---
+
+### Error: "Test class not found during deploy"
+
+**Cause:** Referenced test class doesn't exist or was deleted.
+
+**Diagnosis:**
+Check deploy logs for exact test class name.
+
+**Fix:**
+```bash
+# Search workspace for test class
+find . -name "*TestClass.cls"
+# Or verify in org
+sf apex list tests
+```
+
+---
+
+## Job: trigger-crt-tests
+
+### Error: "CRT build failed"
+
+**Cause:** Smoke tests discovered a functional defect in UAT deployment.
+
+**Diagnosis:**
+1. Click CRT Build ID link in PR comment
+2. Review test execution details in CRT dashboard
+3. Check test logs for failure reason
+
+**Fix:**
+1. Investigate failure (bug in Salesforce code, test data issue, etc.)
+2. Create follow-up issue / hotfix PR
+3. Or rollback deployment and re-investigate
+
+---
+
+### Error: "GraphQL query error from CRT"
+
+**Cause:** API authentication or endpoint issue.
+
+**Diagnosis:**
+Check workflow logs for exact error message (e.g., "401 Unauthorized", "404 Not Found").
+
+**Fix:**
+1. Verify `CRT_API_TOKEN` secret is current:
+   ```bash
+   # Regenerate token in CRT portal
+   # Update GitHub secret
+   ```
+2. Verify endpoint URL: `https://graphql.eu-robotic.copado.com/v1`
+3. Verify `CRT_PROJECT_ID`, `CRT_JOB_ID` in Variables
+
+---
+
+## General Troubleshooting
+
+### How to View Full Workflow Logs
+
+1. Go to **Actions** tab
+2. Select the workflow run
+3. Click on failed job
+4. Expand step logs (click `►`)
+5. Search for error keywords: `ERROR`, `FAIL`, `Exception`
+
+### How to Re-run a Failed Job
+
+1. Go to workflow run
+2. Click **"Re-run failed jobs"** (top right)
+3. Wait for new attempt
+
+### How to Download Artifacts
+
+1. Go to workflow run
+2. Scroll to **"Artifacts"** section
+3. Click artifact name to download
+4. Extract and review (`.csv`, `.json` files)
+
+---
+
+## Support & Escalation
+
+If unable to resolve via this guide:
+
+1. **Check GitHub Issues** — search for similar errors
+2. **Slack #devops** — ask team for troubleshooting help
+3. **Salesforce Release Notes** — check for known API changes
+4. **CRT Documentation** — https://docs.copado.com/
+
+**When posting for help, include:**
+- Workflow run URL
+- Job name + step that failed
+- Error message (full text)
+- Any unusual PR changes (new frameworks, large refactors)
+
+
 ### Error: "Delta package empty"
 
 **Cause:** No changes detected between branches.
