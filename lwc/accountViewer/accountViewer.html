@@ -1,0 +1,19 @@
+<template>
+    <lightning-card title="Recent Accounts">
+        <template if:true={accounts}>
+            <div class="slds-p-around_medium">
+                <template for:each={accounts} for:item="acc">
+                    <p key={acc.Id}>
+                        <strong>{acc.Name}</strong> - {acc.Industry}
+                    </p>
+                </template>
+            </div>
+        </template>
+
+        <template if:true={error}>
+            <div class="slds-p-around_medium slds-text-color_error">
+                {error}
+            </div>
+        </template>
+    </lightning-card>
+</template>
