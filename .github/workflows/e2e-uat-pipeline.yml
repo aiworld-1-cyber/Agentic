@@ -1,5 +1,5 @@
 name: UAT End-to-End Pipeline
-#added env var
+#added env var authurl
 on:
   pull_request:
     branches: [main]
