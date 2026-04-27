@@ -34,7 +34,7 @@ Create a workflow named `UAT End-to-End Pipeline` with the following characteris
 - Triggers: `pull_request` only
 - **Outputs:** `has_delta` (bool) — set `true` if `package/package.xml` or `destructiveChanges/destructiveChanges.xml` contains members
 - Steps:
-  1. checkout (fetch-depth: 0) → setup-node 20 → **bootstrap `package.json` if missing** (writes full standard Salesforce `package.json` via bash heredoc — use EXACT versions below) → npm install → install Salesforce CLI
+  1. checkout (fetch-depth: 0) → setup-node 20 → **bootstrap `package.json` if missing** (writes full standard Salesforce `package.json` via bash heredoc — use EXACT versions below and EXACT indentation pattern from rule 14) → npm install → install Salesforce CLI
   2. Authenticate org from `secrets.CRT_UAT_AUTHURL`
   3. Extract test classes from PR body + comments (pattern: `Tests: Class1, Class2`)
   4. Install `sfdx-git-delta` → build delta package → upload delta artifact
@@ -362,3 +362,40 @@ JSON array for npm audit waivers:
 11. **Always use `set -euo pipefail`** at the top of multi-line `run:` blocks.
 12. **The npm audit waiver check step MUST be copied verbatim from the canonical implementation in Job 3 above** — do NOT invent a new approach, do NOT use Python, do NOT use a heredoc-based script. If uncertain, read `.github/workflows/e2e-uat-pipeline.yml` lines 1283–1367 from this reference repo and copy that implementation exactly.
 13. **If the generated workflow produces a `check-npm-waivers.py` file or any `cat > *.py << 'PYTHON_SCRIPT'` block for waiver checking, the generation is WRONG.** Delete the Python file/step and replace it with the pure-bash YAML block shown in Job 3 above.
+14. **⛔ YAML heredoc indentation — CRITICAL for `package.json` bootstrap steps.** In GitHub Actions, the entire `run: |` block is a YAML literal string. The YAML parser reads it BEFORE bash sees it. If ANY line of the heredoc body starts at column 1 (unindented), the YAML parser treats `{` as a YAML flow mapping and raises `Invalid workflow file`. The closing heredoc marker must also be indented at the same level as the body — NOT at column 0 (as you would in normal bash).
+
+    **WRONG** — `{` at column 1 causes YAML parse error:
+    ```yaml
+          - name: Install npm dependencies
+            run: |
+              if [[ ! -f package.json ]]; then
+                cat > package.json << 'EOF'
+    {
+      "name": "salesforce-app"
+    }
+    EOF
+              fi
+    ```
+
+    **CORRECT** — use `PKGJSON` delimiter; JSON body indented 10 spaces (matching the `run:` block indentation):
+    ```yaml
+          - name: Install npm dependencies
+            run: |
+              set -euo pipefail
+              if [[ ! -f package.json ]]; then
+                cat > package.json << 'PKGJSON'
+              {
+                "name": "salesforce-app",
+                "private": true,
+                ...
+              }
+              PKGJSON
+              fi
+    ```
+    GitHub Actions strips the common leading whitespace from the `run:` block before passing it to bash, so `PKGJSON` at 10-space indent is correctly treated as the heredoc end marker by bash.
+
+    **Rules:**
+    - Always use `PKGJSON` as the heredoc delimiter (never `EOF` or `JSON`)
+    - The opening `{` must be indented at the same level as the surrounding bash (10 spaces in a typical step)
+    - The closing `PKGJSON` must be at the SAME indentation as the `{` line
+    - Read `.github/workflows/e2e-uat-pipeline.yml` lines 224–280 and copy the exact indentation pattern

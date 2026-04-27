@@ -199,31 +199,83 @@ Phase 3: SCA_ENFORCEMENT_MODE = "enforce" (day 15+)
 
 ---
 
-## No-Delta Behavior
+## No-Delta Skip Behavior
 
-When a PR has **no changes** to monitored paths (e.g., only updates README):
+If a PR changes **only documentation** (non-force-app files):
 
-| Job | Behavior |
-|-----|----------|
-| `salesforce-validation` | Skips validation, Apex tests, SCA — sets `has_delta=false` |
-| `automated-governance` | Skipped (requires `has_delta=true`) |
-| `sca-sast-stage` | Still runs (checks npm dependencies) |
-| `approval-merge-gate` | Still runs (requires PR approval) |
-| `deploy-after-merge` | Still runs, but deploys empty delta (safe) |
+| Job | Behavior | Reason |
+|-----|----------|--------|
+| salesforce-validation | `has_delta=false` | No metadata to validate |
+| automated-governance | Skipped | Condition: `has_delta == 'true'` |
+| deploy-after-merge | Proceeds (no changes deploy) | Safe to deploy zero changes |
+
+Use case: Update README, docs, or config without deployment.
 
 ---
 
 ## Quick Start Checklist
 
-- [ ] Create 5 secrets: `CRT_UAT_AUTHURL`, `GH_PAT`, `CRT_API_TOKEN`, optional `CX_CLIENT_SECRET`, `FOD_CLIENT_SECRET`
-- [ ] Create 8 variables: `DELTA_FROM_COMMIT` (required), others as needed with defaults
-- [ ] Configure branch protection on `uat`: require PR + approval
-- [ ] Create first PR to `uat` targeting `force-app/` changes
-- [ ] Monitor workflow run in **Actions** tab
-- [ ] Review PR comment with validation results
-- [ ] Approve PR to trigger merge & deployment
-- [ ] Verify deployment in Actions log
-- [ ] Check `pr_packages` branch for deployment artifacts
+- [ ] **Secrets configured (3 minimum):**
+  - [ ] `CRT_UAT_AUTHURL` set
+  - [ ] `GH_PAT` set
+  - [ ] `CRT_API_TOKEN` set
+  - [ ] `CX_CLIENT_SECRET` (optional, for CheckMarx)
+  - [ ] `FOD_CLIENT_SECRET` (optional, for Fortify)
+
+- [ ] **Variables configured (1 minimum):**
+  - [ ] `DELTA_FROM_COMMIT` set to a valid commit SHA
+  - [ ] `SCA_ENFORCEMENT_MODE` set to `warn` or `off` for initial phase (change to `enforce` after waivers are established)
+
+- [ ] **Branch protection enabled on `uat`:**
+  - [ ] Require PR + 1 approval
+  - [ ] All status checks pass
+  - [ ] Up-to-date requirement
+
+- [ ] **Waiver files created:**
+  - [ ] `.github/sf-scanner-waivers.csv` on main branch (can be empty initially)
+  - [ ] `.github/sca-waivers.json` on main branch (can be empty initially)
+
+- [ ] **Documentation reviewed:**
+  - [ ] Team understands PR approval flow
+  - [ ] Team knows how to request rollbacks
+  - [ ] SCA governance policy is clear
+
+---
+
+## Configuration for Initial Phase
+
+### Week 1-2: Discovery
+- Set `SCA_ENFORCEMENT_MODE=off` to skip all SCA checks
+- Run PRs to understand Apex test requirements
+- Document coverage gaps
+
+### Week 3-4: Governance Setup
+- Set `SCA_ENFORCEMENT_MODE=warn` to log SCA violations without failing
+- Identify and document violations
+- Build initial waiver files (`.github/sf-scanner-waivers.csv` and `.github/sca-waivers.json`)
+
+### Week 5+: Enforcement
+- Set `SCA_ENFORCEMENT_MODE=enforce` to enforce waiver expiry
+- Maintain waiver files on main branch
+- Review and approve waivers before they expire
+
+---
+
+## Troubleshooting
+
+**Issue:** "Secret not found" error in actions
+- **Fix:** Verify secret name exactly matches GitHub UI. Secrets are case-sensitive.
+
+**Issue:** "DELTA_FROM_COMMIT is not set" warning
+- **Fix:** Set `DELTA_FROM_COMMIT` variable to a valid commit SHA on the `uat` branch. Can be any commit; it will be updated automatically.
+
+**Issue:** "GH_PAT does not have required permissions"
+- **Fix:** Recreate the fine-grained token with scopes: `Actions: read+write`, `Variables: read+write`, `Contents: read+write`.
+
+**Issue:** "Waiver file not found" message during SCA check
+- **Fix:** Create `.github/sf-scanner-waivers.csv` on main branch (can be empty). Pipeline will not fail if file is missing.
+
+For more detailed troubleshooting, see [troubleshooting.md](troubleshooting.md).
 
 ---
 

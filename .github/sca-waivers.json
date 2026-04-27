@@ -1,26 +1,18 @@
 [
   {
+    "package": "example-package",
+    "severity": "high",
+    "advisory": "GHSA-xxxx-xxxx-xxxx",
+    "reason": "No fix available yet. Scheduled for next release.",
+    "expires": "2026-12-31",
+    "approved_by": "security-team"
+  },
+  {
     "package": "lodash",
-    "severity": "high",
-    "advisory": "GHSA-35jh-r3h4-6jhm",
-    "reason": "No fix available. Legacy dependency — scheduled for removal in Q3 2026.",
-    "expires": "2026-06-30",
-    "approved_by": "platform-security"
-  },
-  {
-    "package": "minimist",
     "severity": "critical",
-    "advisory": "GHSA-xvch-5gqq-393w",
-    "reason": "Transitive dependency only — not directly used. Waiting for upstream fix.",
-    "expires": "2026-07-31",
+    "advisory": "GHSA-yyyy-yyyy-yyyy",
+    "reason": "Fix pending, no replacement available yet.",
+    "expires": "2026-12-31",
     "approved_by": "platform-security"
-  },
-  {
-    "package": "express",
-    "severity": "high",
-    "advisory": "GHSA-9f97-04qc-545m",
-    "reason": "Vulnerability in specific version range — upgrade in progress (PROJ-2024).",
-    "expires": "2026-05-31",
-    "approved_by": "devops-team"
   }
 ]

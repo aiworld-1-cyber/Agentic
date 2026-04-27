@@ -1,6 +1,17 @@
 rule,file_pattern,message_contains,severity_threshold,expiry,reason,approved_by,approved_date,ticket,status
-ApexDoc,MyClass.cls,,3,10-05-2026,Example waiver for ApexDoc rule. Tracked in PROJ-123.,jane-techlead,10-04-2026,PROJ-123,ACTIVE
-*,MyLegacyClass.cls,,3,10-05-2026,Global component waiver — rewrite in progress. Tracked in PROJ-999.,jane-techlead,10-04-2026,PROJ-999,ACTIVE
-ApexDoc,*,,3,10-05-2026,Global rule waiver — ApexDoc deferred for sprint. Tracked in PROJ-998.,jane-techlead,10-04-2026,PROJ-998,ACTIVE
-*,myLWCComponent,,3,10-05-2026,Global LWC component waiver — ESLint refactor in progress. Tracked in PROJ-997.,jane-techlead,10-04-2026,PROJ-997,ACTIVE
-no-unused-vars,/lwc/,,3,10-05-2026,Global rule for all LWC files. Tracked in PROJ-996.,jane-techlead,10-04-2026,PROJ-996,ACTIVE
+# Sample Salesforce Code Analyzer waivers
+# Format: rule,file_pattern,message_contains,severity_threshold,expiry,reason,approved_by,approved_date,ticket,status
+# expiry format: DD-MM-YYYY (preferred), also accepts DD/MM/YYYY and YYYY-MM-DD
+# status: ACTIVE or REVOKED (keep revoked rows for audit trail)
+
+# Example specific waiver: ApexDoc rule for MyClass.cls
+# ApexDoc,MyClass.cls,,3,31-12-2026,ApexDoc deferred for legacy component. Tracked in PROJ-123.,platform-team,01-12-2026,PROJ-123,ACTIVE
+
+# Example global component waiver: all rules for a legacy file
+# *,LegacyComponent.cls,,3,31-12-2026,Global component waiver — legacy system being deprecated. Tracked in PROJ-124.,platform-team,01-12-2026,PROJ-124,ACTIVE
+
+# Example global rule waiver: specific rule across all files
+# ApexDoc,*,,3,31-12-2026,Global rule waiver — ApexDoc deferred for sprint. Tracked in PROJ-125.,platform-team,01-12-2026,PROJ-125,ACTIVE
+
+# Example LWC waiver
+# no-unused-vars,/lwc/,,3,31-12-2026,Global rule for all LWC files — cleanup scheduled. Tracked in PROJ-126.,platform-team,01-12-2026,PROJ-126,ACTIVE
