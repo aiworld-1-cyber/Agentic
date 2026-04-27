@@ -1,18 +1,18 @@
 [
   {
-    "package": "example-package",
+    "package": "lodash",
     "severity": "high",
     "advisory": "GHSA-xxxx-xxxx-xxxx",
-    "reason": "No fix available yet. Scheduled for next release.",
-    "expires": "2026-12-31",
-    "approved_by": "security-team"
+    "reason": "No fix available yet - monitoring upstream for patch.",
+    "expires": "2026-09-30",
+    "approved_by": "platform-security"
   },
   {
-    "package": "lodash",
+    "package": "minimist",
     "severity": "critical",
     "advisory": "GHSA-yyyy-yyyy-yyyy",
-    "reason": "Fix pending, no replacement available yet.",
-    "expires": "2026-12-31",
-    "approved_by": "platform-security"
+    "reason": "Transitive dependency - scheduled for upgrade in next release.",
+    "expires": "2026-06-30",
+    "approved_by": "security-team"
   }
 ]

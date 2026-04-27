@@ -32,6 +32,7 @@ Create a workflow named `UAT End-to-End Pipeline` with the following characteris
 
 **Job 2 — `salesforce-validation`**: Salesforce PR Validation
 - Triggers: `pull_request` only
+- **`needs: [setup]`** — must always depend on `setup` so it appears in the connected dependency graph
 - **Outputs:** `has_delta` (bool) — set `true` if `package/package.xml` or `destructiveChanges/destructiveChanges.xml` contains members
 - Steps:
   1. checkout (fetch-depth: 0) → setup-node 20 → **bootstrap `package.json` if missing** (writes full standard Salesforce `package.json` via bash heredoc — use EXACT versions below and EXACT indentation pattern from rule 14) → npm install → install Salesforce CLI
@@ -133,6 +134,7 @@ Create a workflow named `UAT End-to-End Pipeline` with the following characteris
 - **Critical:** bash `if`/`while`/`for` blocks must always be written as bash — NEVER embed them inside a `<< 'HEREDOC'` block for another language
 
 **Job 4 — `automated-governance`**: Automated Hard Gates
+- `needs: [salesforce-validation]` — also implicitly connected to `setup` via `salesforce-validation`
 - `needs: [salesforce-validation]`
 - **Condition:** `needs.salesforce-validation.outputs.has_delta == 'true'`
 - Full Apex test suite with coverage (`$COVERAGE_THRESHOLD` minimum, default 85%), destructive changes check + PR comment, targeted SCA
@@ -399,3 +401,12 @@ JSON array for npm audit waivers:
     - The opening `{` must be indented at the same level as the surrounding bash (10 spaces in a typical step)
     - The closing `PKGJSON` must be at the SAME indentation as the `{` line
     - Read `.github/workflows/e2e-uat-pipeline.yml` lines 224–280 and copy the exact indentation pattern
+
+15. **⛔ Job `needs:` chain is mandatory — all PR jobs must be connected to `setup`.** The correct `needs:` for every job that runs on `pull_request`:
+    - Job 2 `salesforce-validation`: `needs: [setup]`
+    - Job 3 `sca-sast-stage`: `needs: [setup]`
+    - Job 4 `automated-governance`: `needs: [salesforce-validation]`
+    - Job 5 `checkmarx-sast`: `needs: [setup]`
+    - Job 6 `fortify-sast-dast`: `needs: [setup]`
+
+    If `salesforce-validation` does NOT have `needs: [setup]`, it runs as an orphan parallel to `setup` rather than after it, and the jobs appear disconnected in the GitHub Actions UI. This is always wrong.

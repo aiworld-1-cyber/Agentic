@@ -98,6 +98,93 @@ Triggered when PR is created/updated targeting the `uat` branch:
 - `checkmarx-sast` (if secret configured)
 - `fortify-sast-dast` (if secret configured)
 
+### Pull Request Review (Approval)
+Triggered when PR review is submitted with approval state:
+- Only the approval-merge-gate job runs
+- Merges the PR if approval is fresh (≤24 hours old)
+- Automatically triggers deploy-after-merge
+
+### Workflow Dispatch (Manual Trigger)
+Available inputs:
+- `scanner`: `all` | `checkmarx` | `fortify` (runs specific scanning jobs)
+- `action`: `deploy` | `rollback`
+- `rollback_commit_sha`: Target commit for rollback
+- `rollback_pr_number`: PR reference for rollback
+
+---
+
+## SCA Enforcement Modes
+
+The `SCA_ENFORCEMENT_MODE` variable controls how static code analysis violations are handled:
+
+| Mode | Behavior | Use Case |
+|------|----------|----------|
+| `enforce` (default) | Expired waivers **fail the pipeline** | Production pipelines — strict compliance |
+| `warn` | All violations are warnings only; pipeline **never fails** on SCA | Development phase — informational only |
+| `off` | **All SCA steps are skipped entirely** | Emergency bypass or when SCA not yet configured |
+
+**⚠️ Important:** Changing to `warn` or `off` should only be temporary. Set back to `enforce` once issues are resolved.
+
+---
+
+## No-Delta Behavior
+
+When a PR has **no metadata changes** (no `.cls`, `.trigger`, `.js`, `.html`, `.css` files modified):
+
+- `salesforce-validation` still runs but skips deployment validate + coverage checks
+- `has_delta` output is `false`
+- `automated-governance` job is **skipped** (condition requires `has_delta == 'true'`)
+- SCA and npm audit still run (if configured)
+- **Result:** PR can be approved and merged without deployment
+
+---
+
+## DELTA_FROM_COMMIT Auto-Update
+
+After each successful deployment to UAT:
+1. `deploy-after-merge` job computes the delta
+2. Calls GitHub API to update `DELTA_FROM_COMMIT` variable
+3. Next PR uses the new baseline SHA
+4. **Fallback:** If HEAD~1 is unavailable (shallow clone), uses the stored `DELTA_FROM_COMMIT`
+
+This ensures delta calculations are always relative to the last deployed commit, preventing re-deployment of old code.
+
+---
+
+## Quick Start Checklist
+
+- [ ] **Create secrets:** `CRT_UAT_AUTHURL`, `GH_PAT`, `CRT_API_TOKEN`
+- [ ] **Optional secrets:** `CX_CLIENT_SECRET` (CheckMarx), `FOD_CLIENT_SECRET` (Fortify)
+- [ ] **Create variables:** `DELTA_FROM_COMMIT` (set to a commit SHA on `uat`), plus optional `ORG_ALIAS`, `COVERAGE_THRESHOLD`, `SCA_ENFORCEMENT_MODE`
+- [ ] **Configure branch protection** on `uat` branch (require 1 approval, require checks to pass)
+- [ ] **Create orphan branch:** `git checkout --orphan pr_packages && git rm -rf . && git commit --allow-empty -m "init" && git push origin pr_packages`
+- [ ] **Test workflow:** Create a test PR with a dummy change to verify all jobs pass
+- [ ] **Review deployment** in CRT dashboard after first successful merge
+
+---
+
+## Troubleshooting Common Issues
+
+### Secret Not Found / Auth Failed
+- Verify secret name matches exactly: `CRT_UAT_AUTHURL`
+- Check secret value starts with `force://` or similar
+- Re-create auth URL if corrupted: `sf org login sfdx-url display --json`
+
+### Coverage Below Threshold
+- Run tests locally: `sf apex test run --code-coverage-only --wait 60`
+- Add tests for uncovered lines
+- Or raise threshold: `Settings → Variables → COVERAGE_THRESHOLD`
+
+### npm audit failures
+- Check `.github/sca-waivers.json` for expired entries
+- Update expiry date or fix the vulnerability
+- Use `SCA_ENFORCEMENT_MODE: warn` to temporarily bypass
+
+### Deployment validation fails
+- Download delta artifact from Actions run
+- Test locally: `sf project deploy validate --source-dir delta_package`
+- Fix metadata errors and re-push
+
 **Output:** 
 - PR comment with validation results
 - SCA governance report (if violations found)

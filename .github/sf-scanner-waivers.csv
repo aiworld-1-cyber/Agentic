@@ -1,17 +1,16 @@
 rule,file_pattern,message_contains,severity_threshold,expiry,reason,approved_by,approved_date,ticket,status
-# Sample Salesforce Code Analyzer waivers
-# Format: rule,file_pattern,message_contains,severity_threshold,expiry,reason,approved_by,approved_date,ticket,status
-# expiry format: DD-MM-YYYY (preferred), also accepts DD/MM/YYYY and YYYY-MM-DD
-# status: ACTIVE or REVOKED (keep revoked rows for audit trail)
+# Salesforce Code Analyzer Waivers (CSV format)
+# Store on main branch only - PR modifications are ignored
+# Expiry formats: DD-MM-YYYY (preferred), DD/MM/YYYY, or YYYY-MM-DD
 
-# Example specific waiver: ApexDoc rule for MyClass.cls
-# ApexDoc,MyClass.cls,,3,31-12-2026,ApexDoc deferred for legacy component. Tracked in PROJ-123.,platform-team,01-12-2026,PROJ-123,ACTIVE
+# Example: Specific waiver - ApexDoc violations in one class
+ApexDoc,AccountUtilityService.cls,,3,30-09-2026,Class refactor in progress - documentation deferred to next sprint.,alice-lead,01-04-2026,PROJ-123,ACTIVE
 
-# Example global component waiver: all rules for a legacy file
-# *,LegacyComponent.cls,,3,31-12-2026,Global component waiver — legacy system being deprecated. Tracked in PROJ-124.,platform-team,01-12-2026,PROJ-124,ACTIVE
+# Example: Global component waiver - all rules for legacy class
+*,LegacyService.cls,,3,30-06-2026,EOL migration in progress - full replacement scheduled for Q3 2026.,bob-architect,01-04-2026,PROJ-456,ACTIVE
 
-# Example global rule waiver: specific rule across all files
-# ApexDoc,*,,3,31-12-2026,Global rule waiver — ApexDoc deferred for sprint. Tracked in PROJ-125.,platform-team,01-12-2026,PROJ-125,ACTIVE
+# Example: Global rule waiver - ApexDoc for all files in admin package
+ApexDoc,AdminPackage,,3,31-08-2026,Complex domain logic - documentation deferred. Refactor planned for next phase.,charlie-tech,01-04-2026,PROJ-789,ACTIVE
 
-# Example LWC waiver
-# no-unused-vars,/lwc/,,3,31-12-2026,Global rule for all LWC files — cleanup scheduled. Tracked in PROJ-126.,platform-team,01-12-2026,PROJ-126,ACTIVE
+# Example: Revoked waiver - kept for audit trail
+no-unused-vars,/aura/,,,30-09-2025,DEPRECATED - ESLint upgraded in v2.0.,eve-qa,01-09-2025,PROJ-111,REVOKED
