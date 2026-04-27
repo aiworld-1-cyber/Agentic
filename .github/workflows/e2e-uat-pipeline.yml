@@ -2,7 +2,7 @@ name: UAT End-to-End Pipeline
 
 on:
   pull_request:
-    branches: [uat]
+    branches: [main]
     paths:
       - 'force-app/**'
       - '.github/workflows/e2e-uat-pipeline.yml'
